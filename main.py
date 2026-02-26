@@ -336,6 +336,7 @@ def procesar_ventas(spreadsheet_id, gid):
         print(f"Descargando hoja de ventas (gid={gid})...", file=sys.stderr)
         
         url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid}"
+        print(f"📌 URL generada: {url}", file=sys.stderr)
         df = pd.read_csv(url, dtype=str)
         df = df.drop_duplicates()
         
