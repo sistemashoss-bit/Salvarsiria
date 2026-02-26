@@ -18,36 +18,59 @@ creds, _ = default()
 gc = gspread.authorize(creds)
 
 # ── Supabase ──────────────────────────────────────────────────────────
-supabase_url = os.environ.get('SUPABASE_URL')
-supabase_key = os.environ.get('SUPABASE_KEY')
+# DEBUG: Mostrar todas las variables disponibles (solo al iniciar)
+print(f"🔍 Variables de entorno disponibles:", file=sys.stderr)
+for key in sorted(os.environ.keys()):
+    if 'SUPABASE' in key or 'supabase' in key.lower():
+        value = os.environ[key]
+        masked = value[:20] + '...' if len(value) > 20 else value
+        print(f"  {key}={masked}", file=sys.stderr)
 
-# Validación defensiva - CRÍTICO
+# Leer variables de entorno de forma ROBUSTA para Cloud Run
+# Usar directamente os.environ[] en lugar de .get() para garantizar que existen
+try:
+    supabase_url = os.environ['SUPABASE_URL']
+    supabase_key = os.environ['SUPABASE_KEY']
+    print(f"✅ Variables de entorno leídas correctamente", file=sys.stderr)
+except KeyError as e:
+    error_msg = (
+        f"❌ ERROR CRÍTICO: Variable de entorno faltante: {str(e)}\n"
+        f"Variables disponibles: {list(os.environ.keys())}\n\n"
+        f"SOLUCIÓN: Configura en Cloud Run → Editar → Variables de entorno:\n"
+        f"  SUPABASE_URL = https://[tu-proyecto].supabase.co\n"
+        f"  SUPABASE_KEY = [tu-secret-key]\n"
+        f"\nLuego haz IMPLEMENTAR y espera el deploy."
+    )
+    print(error_msg, file=sys.stderr)
+    raise ValueError(f"Variable de entorno faltante: {str(e)}")
+
+# Validación de valores
 if not supabase_url or not supabase_key:
     error_msg = (
-        "❌ ERROR CRÍTICO: Variables de entorno no configuradas\n"
-        f"  SUPABASE_URL: {'✅ Configurada' if supabase_url else '❌ NO CONFIGURADA'}\n"
-        f"  SUPABASE_KEY: {'✅ Configurada' if supabase_key else '❌ NO CONFIGURADA'}\n\n"
-        "SOLUCIÓN: Configura en Cloud Run → Editar → Variables de entorno:\n"
-        "  SUPABASE_URL = https://[tu-proyecto].supabase.co\n"
-        "  SUPABASE_KEY = [tu-secret-key] (Settings → API → Secret key)\n"
+        f"❌ ERROR: Variables de entorno están vacías\n"
+        f"  SUPABASE_URL: {'tiene valor' if supabase_url else 'VACÍA'}\n"
+        f"  SUPABASE_KEY: {'tiene valor' if supabase_key else 'VACÍA'}\n"
     )
     print(error_msg, file=sys.stderr)
-    raise ValueError("Variables de entorno SUPABASE_URL y SUPABASE_KEY requeridas")
+    raise ValueError("Variables de entorno están vacías")
 
+print(f"✅ SUPABASE_URL: {supabase_url}", file=sys.stderr)
+print(f"✅ SUPABASE_KEY: {supabase_key[:30]}...{supabase_key[-10:]}", file=sys.stderr)
+
+# Intentar conexión con más debug
 try:
+    print(f"🔄 Intentando crear cliente Supabase...", file=sys.stderr)
     supabase: Client = create_client(supabase_url, supabase_key)
     print("✅ Conexión a Supabase establecida correctamente", file=sys.stderr)
+    
 except Exception as e:
-    error_msg = (
-        f"❌ ERROR al conectar a Supabase: {str(e)}\n"
-        f"Verifica que:\n"
-        f"  1. SUPABASE_URL sea válida: {supabase_url[:40]}...\n"
-        f"  2. SUPABASE_KEY sea la SECRET KEY (no service_role, no anon)\n"
-        f"     Obtén la de: Settings → API → Project API keys → Secret key\n"
-        f"  3. Tu proyecto Supabase esté activo\n"
-        f"  4. La secret key no esté expirada o revocada\n"
-    )
-    print(error_msg, file=sys.stderr)
+    error_msg = str(e)
+    print(f"❌ ERROR al conectar a Supabase: {error_msg}", file=sys.stderr)
+    print(f"\nDEBUG INFO:", file=sys.stderr)
+    print(f"  URL: {supabase_url}", file=sys.stderr)
+    print(f"  KEY length: {len(supabase_key)}", file=sys.stderr)
+    print(f"  KEY starts with: {supabase_key[:10]}", file=sys.stderr)
+    print(f"  Error type: {type(e).__name__}", file=sys.stderr)
     raise
 
 
