@@ -163,7 +163,8 @@ def obtener_duplicados_postgresql(tabla, columnas_clave, datos):
                 if resultado:
                     duplicados.append({
                         '_db_row': resultado,
-                        '_df_index': row_idx
+                        '_df_index': row_idx,
+                        '_row_data': row  # Agregar los datos originales
                     })
                     
             except Exception as e:
@@ -179,6 +180,52 @@ def obtener_duplicados_postgresql(tabla, columnas_clave, datos):
     finally:
         if conn:
             return_db_connection(conn)
+
+
+def escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, duplicados_ventas, df_ventas):
+    """Escribe los duplicados encontrados en una hoja de Google Sheets"""
+    try:
+        if not duplicados_ventas:
+            print(f"No hay duplicados para escribir", file=sys.stderr)
+            return True
+        
+        print(f"Escribiendo {len(duplicados_ventas)} duplicados en Google Sheets...", file=sys.stderr)
+        
+        # Abre el spreadsheet
+        sheet = gc.open_by_key(spreadsheet_id)
+        
+        # Obtén o crea la hoja de duplicados
+        worksheet = None
+        try:
+            worksheet = sheet.worksheet("Duplicados")
+            print(f"✅ Hoja 'Duplicados' encontrada", file=sys.stderr)
+            # Limpiar hoja anterior
+            worksheet.clear()
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"Creando hoja 'Duplicados'...", file=sys.stderr)
+            worksheet = sheet.add_worksheet(title="Duplicados", rows=1000, cols=20)
+        
+        # Preparar encabezados
+        headers = list(df_ventas.columns)
+        
+        # Preparar datos para escribir
+        rows_to_write = [headers]  # Primera fila con headers
+        
+        for dup in duplicados_ventas:
+            row_data = dup['_row_data']
+            row = [row_data.get(col, '') for col in headers]
+            rows_to_write.append(row)
+        
+        # Escribir datos en la hoja
+        worksheet.update('A1', rows_to_write)
+        
+        print(f"✅ {len(duplicados_ventas)} registros duplicados escritos en la hoja 'Duplicados'", file=sys.stderr)
+        return True
+        
+    except Exception as e:
+        print(f"Error escribiendo duplicados en Sheets: {str(e)}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        return False
 
 
 # ── Funciones de Procesamiento ────────────────────────────────────────
@@ -387,13 +434,48 @@ def procesar_ventas(spreadsheet_id, gid):
         df = df.drop_duplicates()
         
         print(f"Filas iniciales: {len(df)}", file=sys.stderr)
+        print(f"📊 Columnas encontradas: {list(df.columns)}", file=sys.stderr)
+        
+        # Limpiar espacios en blanco de nombres de columnas
+        df.columns = df.columns.str.strip()
+        
+        # Mapear nombres de columnas de Google Sheets a nombres estándar
+        rename_map = {
+            'Folio': 'folio',
+            'Fecha de venta': 'fecha_venta',
+            'Cliente': 'cliente',
+            'Sucursal': 'sucursal',
+            'Metodo de Venta': 'metodo_venta',
+            'Tipo de Pago': 'tipo_pago',
+            'Unidades Vendidas': 'unidades_vendidas',
+            'NotaVenta': 'nota_venta',
+            'Total': 'total',
+            'Pago Recibido': 'pago_recibido',
+            'Método de Pago': 'metodo_pago',
+            'Cuenta de Depósito': 'cuenta_deposito',
+            'Confirmacion Pago': 'confirmacion_pago',
+            'Articulo': 'articulo',
+            'Se Paga': 'se_paga'
+        }
+        
+        df = df.rename(columns=rename_map)
+        print(f"📊 Columnas (después rename): {list(df.columns)}", file=sys.stderr)
         
         # Convertir tipos de datos según schema
-        df['folio'] = pd.to_numeric(df['folio'], errors='coerce').astype('Int64')
-        df['unidades_vendidas'] = pd.to_numeric(df['unidades_vendidas'], errors='coerce').astype('Int64')
-        df['total'] = pd.to_numeric(df['total'], errors='coerce')
-        df['pago_recibido'] = pd.to_numeric(df['pago_recibido'], errors='coerce')
-        df['fecha_venta'] = pd.to_datetime(df['fecha_venta'], errors='coerce')
+        if 'folio' in df.columns:
+            df['folio'] = pd.to_numeric(df['folio'], errors='coerce').astype('Int64')
+        
+        if 'unidades_vendidas' in df.columns:
+            df['unidades_vendidas'] = pd.to_numeric(df['unidades_vendidas'], errors='coerce').astype('Int64')
+        
+        if 'total' in df.columns:
+            df['total'] = pd.to_numeric(df['total'], errors='coerce')
+        
+        if 'pago_recibido' in df.columns:
+            df['pago_recibido'] = pd.to_numeric(df['pago_recibido'], errors='coerce')
+        
+        if 'fecha_venta' in df.columns:
+            df['fecha_venta'] = pd.to_datetime(df['fecha_venta'], errors='coerce')
         
         print(f"Ventas procesadas: {len(df)} filas", file=sys.stderr)
         return df
@@ -425,6 +507,7 @@ def validar():
         spreadsheet_id = data.get('spreadsheet_base_id')
         gid_ventas = data.get('gid_ventas')
         gid_comisiones = data.get('gid_comisiones')
+        gid_duplicados = data.get('gid_duplicados', '1455156763')  # GID de la hoja Duplicados
         tabla_ventas = data.get('tabla_ventas', 'ventas')
         tabla_comisiones = data.get('tabla_comisiones', 'comisiones')
         columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta'])
@@ -445,11 +528,15 @@ def validar():
         
         if duplicados_ventas:
             print(f"🔴 DUPLICADOS EN VENTAS: {len(duplicados_ventas)}", file=sys.stderr)
+            # Escribir duplicados en Google Sheets
+            escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, duplicados_ventas, df_ventas)
+            
             return jsonify({
                 "status": "validacion_fallida",
                 "paso": "ventas",
                 "mensaje": f"❌ Se encontraron {len(duplicados_ventas)} registros duplicados en VENTAS",
-                "duplicados_encontrados": len(duplicados_ventas)
+                "duplicados_encontrados": len(duplicados_ventas),
+                "accion": "Duplicados escritos en la hoja 'Duplicados'"
             }), 200
 
         print("✅ Validación de VENTAS OK", file=sys.stderr)
@@ -519,24 +606,44 @@ def subirdatos():
             }), 400
 
         # PROCESAMIENTO
-        print("[1/4] Procesando VENTAS...", file=sys.stderr)
+        print("[1/5] Procesando VENTAS...", file=sys.stderr)
         df_ventas = procesar_ventas(spreadsheet_id, gid_ventas)
+        
+        print("[2/5] Procesando COMISIONES...", file=sys.stderr)
+        df_comisiones = procesar_comisiones(spreadsheet_id, gid_comisiones)
+        
+        # JOINEAR VENTAS CON COMISIONES
+        print("[3/5] Joinando VENTAS con COMISIONES...", file=sys.stderr)
+        
+        # Seleccionar solo las columnas de comisiones (sin fecha_inicial, fecha_final)
+        cols_comisiones = [col for col in df_comisiones.columns if col.startswith('comision_') or col == 'sucursal']
+        df_comisiones_join = df_comisiones[cols_comisiones]
+        
+        # Merge left join
+        df_ventas = df_ventas.merge(
+            df_comisiones_join,
+            on='sucursal',
+            how='left'
+        )
+        
+        print(f"✅ Join completado. Columnas: {len(df_ventas.columns)}, Filas: {len(df_ventas)}", file=sys.stderr)
+        
+        # Convertir tipos para PostgreSQL
         df_ventas = convertir_tipos_para_postgresql(df_ventas)
         datos_ventas = df_ventas.to_dict(orient='records')
         
         columnas_ventas = list(df_ventas.columns)
         
-        print("[2/4] Insertando VENTAS...", file=sys.stderr)
+        print("[4/5] Insertando VENTAS...", file=sys.stderr)
         filas_ventas = insertar_datos_postgresql(tabla_ventas, datos_ventas, columnas_ventas)
 
-        print("[3/4] Procesando COMISIONES...", file=sys.stderr)
-        df_comisiones = procesar_comisiones(spreadsheet_id, gid_comisiones)
+        # Convertir comisiones para PostgreSQL
         df_comisiones = convertir_tipos_para_postgresql(df_comisiones)
         datos_comisiones = df_comisiones.to_dict(orient='records')
         
         columnas_comisiones = list(df_comisiones.columns)
         
-        print("[4/4] Insertando COMISIONES...", file=sys.stderr)
+        print("[5/5] Insertando COMISIONES...", file=sys.stderr)
         filas_comisiones = insertar_datos_postgresql(tabla_comisiones, datos_comisiones, columnas_comisiones)
 
         print("\n✅ INSERCIÓN COMPLETADA\n", file=sys.stderr)
