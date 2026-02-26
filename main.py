@@ -20,7 +20,33 @@ gc = gspread.authorize(creds)
 # ── Supabase ──────────────────────────────────────────────────────────
 supabase_url = os.environ.get('SUPABASE_URL')
 supabase_key = os.environ.get('SUPABASE_KEY')
-supabase: Client = create_client(supabase_url, supabase_key)
+
+# Validación defensiva - CRÍTICO
+if not supabase_url or not supabase_key:
+    error_msg = (
+        "❌ ERROR CRÍTICO: Variables de entorno no configuradas\n"
+        f"  SUPABASE_URL: {'✅ Configurada' if supabase_url else '❌ NO CONFIGURADA'}\n"
+        f"  SUPABASE_KEY: {'✅ Configurada' if supabase_key else '❌ NO CONFIGURADA'}\n\n"
+        "SOLUCIÓN: Configura en Cloud Run → Editar → Variables de entorno:\n"
+        "  SUPABASE_URL = https://[tu-proyecto].supabase.co\n"
+        "  SUPABASE_KEY = eyJhbGc... (tu service role key)\n"
+    )
+    print(error_msg, file=sys.stderr)
+    raise ValueError("Variables de entorno SUPABASE_URL y SUPABASE_KEY requeridas")
+
+try:
+    supabase: Client = create_client(supabase_url, supabase_key)
+    print("✅ Conexión a Supabase establecida correctamente", file=sys.stderr)
+except Exception as e:
+    error_msg = (
+        f"❌ ERROR al conectar a Supabase: {str(e)}\n"
+        f"Verifica que:\n"
+        f"  1. SUPABASE_URL sea válida: {supabase_url[:30]}...\n"
+        f"  2. SUPABASE_KEY sea válida (service role key)\n"
+        f"  3. Tu proyecto Supabase esté activo\n"
+    )
+    print(error_msg, file=sys.stderr)
+    raise
 
 
 # ── Funciones de Conversión ───────────────────────────────────────────
