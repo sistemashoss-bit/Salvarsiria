@@ -231,7 +231,7 @@ def escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, duplicados_ven
 # ── Funciones de Procesamiento ────────────────────────────────────────
 
 def procesar_comisiones(spreadsheet_id, gid):
-    """Procesa la hoja de comisiones usando API de gspread"""
+    """Procesa la hoja de comisiones - Replicando exactamente tu código original"""
     try:
         print(f"Abriendo spreadsheet (ID={spreadsheet_id})...", file=sys.stderr)
         
@@ -250,18 +250,15 @@ def procesar_comisiones(spreadsheet_id, gid):
         
         print(f"✅ Usando hoja: {worksheet.title} (gid={gid})", file=sys.stderr)
         
-        # Obtén todos los valores (sin procesar headers automáticamente)
+        # Obtén todos los valores
         print(f"Descargando datos de la hoja...", file=sys.stderr)
         all_values = worksheet.get_all_values()
         
         if not all_values:
             raise ValueError("La hoja está vacía")
         
-        # Convertir a DataFrame sin headers automáticos
+        # PASO 1: Extraer fechas (ANTES de cualquier otra transformación)
         raw = pd.DataFrame(all_values)
-        raw = raw.rename(columns=lambda x: int(x) if isinstance(x, str) and x.isdigit() else x)
-        
-        # Extraer fechas (igual que antes, pero de diferentes fuentes)
         fecha_inicial = raw.iloc[2, 1] if len(raw) > 2 else None
         fecha_final = raw.iloc[4, 1] if len(raw) > 4 else None
         fecha_inicial = pd.to_datetime(fecha_inicial, format="%m/%d/%Y", errors="coerce")
@@ -269,17 +266,24 @@ def procesar_comisiones(spreadsheet_id, gid):
         
         print(f"Fechas: {fecha_inicial} a {fecha_final}", file=sys.stderr)
         
-        # Procesar datos (skip primeras filas, usar columnas específicas)
+        # PASO 2: Corte limpio (exactamente como en tu código)
         comisiones = pd.DataFrame(all_values)
-        comisiones = comisiones.iloc[1:, 5:]
-        comisiones.columns = comisiones.iloc[0]
-        comisiones = comisiones.iloc[1:].reset_index(drop=True)
+        comisiones = comisiones.iloc[1:, 5:]  # Skip primera fila, columnas desde 5
+        comisiones.columns = comisiones.iloc[0]  # Primera fila como headers
+        comisiones = comisiones.iloc[1:]  # Skip la fila de headers
+        comisiones = comisiones.reset_index(drop=True)
         
+        print(f"📊 Columnas después de corte: {list(comisiones.columns)}", file=sys.stderr)
+        
+        # PASO 3: Eliminar columnas específicas
         cols_eliminar = [1, 3, 7, 9, 14, 17, 21]
         calc_com = comisiones.drop(columns=comisiones.columns[cols_eliminar])
         calc_com.columns.name = None
-        cols_num = calc_com.columns.drop("Sucursal")
         
+        print(f"📊 Columnas después de eliminar: {list(calc_com.columns)}", file=sys.stderr)
+        
+        # PASO 4: Convertir columnas numéricas
+        cols_num = calc_com.columns.drop("Sucursal")
         calc_com[cols_num] = (
             calc_com[cols_num]
             .astype(str)
@@ -288,109 +292,68 @@ def procesar_comisiones(spreadsheet_id, gid):
             .fillna(0)
         )
         
-        # Renombrar columnas según el schema
-        rename_map = {
-            "Comision Vendedor": "comision_vendedor",
-            "Comision Chapas": "comision_chapas",
-            "Comision Instalaciones": "comision_instalaciones",
-            "Comision Vendedor HC": "comision_vendedor_hc",
-            "Comision Chapas HC": "comision_chapas_hc",
-            "Total": "total",
-            "Total Chapa": "total_chapa",
-            "Total Puertas HC": "total_puertas_hc",
-            "Total  C HC": "total_c_hc",
-            "Instalaciones Vendedor": "instalaciones_vendedor",
-            "Total Instalaciones": "total_instalaciones",
-            "Puertas": "puertas",
-            "Instalaciones": "instalaciones",
-            "Chapas": "chapas",
-            "Coordinador": "coordinador",
-            "Elena": "elena",
-            "Osvaldo": "osvaldo",
-            "July": "july",
-            "Sucursal": "sucursal"
-        }
+        # PASO 5: Calcular porcentajes (ANTES de renombrar)
+        # Crear columnas de comisión con nombres originales
+        calc_com["Comision Vendedor Puertas"] = calc_com["Comision Vendedor"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
+        calc_com["Comision Vendedor Chapas"] = calc_com["Comision Chapas"] / (calc_com["Total Chapa"] + calc_com["Total  C HC"])
+        calc_com["Comision Vendedor Instalaciones"] = calc_com["Comision Instalaciones"] / calc_com["Instalaciones Vendedor"]
+        calc_com["Comision Vendedor HC"] = calc_com["Comision Vendedor HC"] / calc_com["Total Puertas HC"]
+        calc_com["Comision Chapas HC"] = calc_com["Comision Chapas HC"] / calc_com["Total  C HC"]
+        calc_com["Comision Supervisor Puertas"] = calc_com["Puertas"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
+        calc_com["Comision Supervisor Chapas"] = calc_com["Chapas"] / (calc_com["Total Chapa"] + calc_com["Total  C HC"])
+        calc_com["Comision Supervisor Instalaciones"] = calc_com["Instalaciones"] / calc_com["Instalaciones Vendedor"]
+        calc_com["Comision Coordinador"] = calc_com["Coordinador"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
+        calc_com["Comision Elena"] = calc_com["Elena"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
+        calc_com["Comision Osvaldo"] = calc_com["Osvaldo"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
+        calc_com["Comision July"] = calc_com["July"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
         
-        calc_com = calc_com.rename(columns=rename_map)
+        # PASO 6: Seleccionar columnas
+        calc_com = calc_com[[
+            "Sucursal",
+            "Comision Vendedor Puertas",
+            "Comision Vendedor Chapas",
+            "Comision Vendedor Instalaciones",
+            "Comision Vendedor HC",
+            "Comision Chapas HC",
+            "Comision Supervisor Puertas",
+            "Comision Supervisor Chapas",
+            "Comision Supervisor Instalaciones",
+            "Comision Coordinador",
+            "Comision Elena",
+            "Comision Osvaldo",
+            "Comision July",
+        ]]
         
-        # Calcular porcentajes de comisión
-        calc_com["comision_vendedor_puertas"] = calc_com.apply(
-            lambda row: row["comision_vendedor"] / (row["total"] + row["total_puertas_hc"]) 
-            if (row["total"] + row["total_puertas_hc"]) != 0 else 0,
-            axis=1
-        )
-        calc_com["comision_vendedor_chapas"] = calc_com.apply(
-            lambda row: row["comision_chapas"] / (row["total_chapa"] + row["total_c_hc"])
-            if (row["total_chapa"] + row["total_c_hc"]) != 0 else 0,
-            axis=1
-        )
-        calc_com["comision_vendedor_instalaciones"] = calc_com.apply(
-            lambda row: row["comision_instalaciones"] / row["instalaciones_vendedor"]
-            if row["instalaciones_vendedor"] != 0 else 0,
-            axis=1
-        )
-        
-        calc_com["comision_supervisor_puertas"] = calc_com.apply(
-            lambda row: row["puertas"] / (row["total"] + row["total_puertas_hc"])
-            if (row["total"] + row["total_puertas_hc"]) != 0 else 0,
-            axis=1
-        )
-        calc_com["comision_supervisor_chapas"] = calc_com.apply(
-            lambda row: row["chapas"] / (row["total_chapa"] + row["total_c_hc"])
-            if (row["total_chapa"] + row["total_c_hc"]) != 0 else 0,
-            axis=1
-        )
-        calc_com["comision_supervisor_instalaciones"] = calc_com.apply(
-            lambda row: row["instalaciones"] / row["instalaciones_vendedor"]
-            if row["instalaciones_vendedor"] != 0 else 0,
-            axis=1
-        )
-        
-        # Seleccionar columnas según schema
-        columnas_finales = [
-            "sucursal",
-            "total",
-            "total_chapa",
-            "instalaciones_vendedor",
-            "total_instalaciones",
-            "total_puertas_hc",
-            "total_c_hc",
-            "comision_vendedor",
-            "comision_chapas",
-            "comision_instalaciones",
-            "comision_vendedor_hc",
-            "comision_chapas_hc",
-            "puertas",
-            "instalaciones",
-            "chapas",
-            "coordinador",
-            "elena",
-            "osvaldo",
-            "july",
-            "comision_vendedor_puertas",
-            "comision_vendedor_chapas",
-            "comision_vendedor_instalaciones",
-            "comision_supervisor_puertas",
-            "comision_supervisor_chapas",
-            "comision_supervisor_instalaciones"
-        ]
-        
-        calc_com = calc_com[columnas_finales]
-        
+        # PASO 7: Limpiar NaN e infinitos
         calc_com.replace([np.inf, -np.inf], 0, inplace=True)
         calc_com.fillna(0, inplace=True)
         
-        # Redondear porcentajes
-        calc_com["comision_vendedor_puertas"] = calc_com["comision_vendedor_puertas"].round(4)
-        calc_com["comision_vendedor_chapas"] = calc_com["comision_vendedor_chapas"].round(4)
-        calc_com["comision_vendedor_instalaciones"] = calc_com["comision_vendedor_instalaciones"].round(4)
-        calc_com["comision_supervisor_puertas"] = calc_com["comision_supervisor_puertas"].round(4)
-        calc_com["comision_supervisor_chapas"] = calc_com["comision_supervisor_chapas"].round(4)
-        calc_com["comision_supervisor_instalaciones"] = calc_com["comision_supervisor_instalaciones"].round(4)
+        # PASO 8: Redondear
+        cols_comisiones = calc_com.columns.drop("Sucursal")
+        calc_com[cols_comisiones] = calc_com[cols_comisiones].round(4)
         
-        # Agregar fechas
+        # PASO 9: Agregar fechas y renombrar columnas para PostgreSQL
         calc_com.insert(0, "fecha_inicial", fecha_inicial)
         calc_com.insert(1, "fecha_final", fecha_final)
+        
+        # Renombrar para coincidir con schema PostgreSQL
+        rename_map = {
+            "Sucursal": "sucursal",
+            "Comision Vendedor Puertas": "comision_vendedor_puertas",
+            "Comision Vendedor Chapas": "comision_vendedor_chapas",
+            "Comision Vendedor Instalaciones": "comision_vendedor_instalaciones",
+            "Comision Vendedor HC": "comision_vendedor_hc",
+            "Comision Chapas HC": "comision_chapas_hc",
+            "Comision Supervisor Puertas": "comision_supervisor_puertas",
+            "Comision Supervisor Chapas": "comision_supervisor_chapas",
+            "Comision Supervisor Instalaciones": "comision_supervisor_instalaciones",
+            "Comision Coordinador": "comision_coordinador",
+            "Comision Elena": "comision_elena",
+            "Comision Osvaldo": "comision_osvaldo",
+            "Comision July": "comision_july",
+        }
+        
+        calc_com = calc_com.rename(columns=rename_map)
         
         print(f"Comisiones procesadas: {len(calc_com)} filas", file=sys.stderr)
         return calc_com
