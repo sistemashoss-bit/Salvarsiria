@@ -231,59 +231,36 @@ def escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, duplicados_ven
 # ── Funciones de Procesamiento ────────────────────────────────────────
 
 def procesar_comisiones(spreadsheet_id, gid):
-    """Procesa la hoja de comisiones - Replicando exactamente tu código original"""
+    """Procesa la hoja de comisiones - Exactamente como tu código original con CSV"""
     try:
-        print(f"Abriendo spreadsheet (ID={spreadsheet_id})...", file=sys.stderr)
+        print(f"Descargando comisiones (gid={gid})...", file=sys.stderr)
         
-        # Abre el spreadsheet
-        sheet = gc.open_by_key(spreadsheet_id)
+        # Usar la misma URL que en tu código original
+        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid}"
         
-        # Obtén la hoja por su ID (gid)
-        worksheet = None
-        for ws in sheet.worksheets():
-            if ws.id == int(gid):
-                worksheet = ws
-                break
+        ventas = pd.read_csv(url)
+        comisiones = pd.read_csv(url)
+        raw = pd.read_csv(url, header=None)
         
-        if not worksheet:
-            raise ValueError(f"❌ No se encontró la hoja con gid={gid}")
-        
-        print(f"✅ Usando hoja: {worksheet.title} (gid={gid})", file=sys.stderr)
-        
-        # Obtén todos los valores
-        print(f"Descargando datos de la hoja...", file=sys.stderr)
-        all_values = worksheet.get_all_values()
-        
-        if not all_values:
-            raise ValueError("La hoja está vacía")
-        
-        # PASO 1: Extraer fechas (ANTES de cualquier otra transformación)
-        raw = pd.DataFrame(all_values)
-        fecha_inicial = raw.iloc[2, 1] if len(raw) > 2 else None
-        fecha_final = raw.iloc[4, 1] if len(raw) > 4 else None
+        fecha_inicial = raw.iloc[2, 1]
+        fecha_final = raw.iloc[4, 1]
         fecha_inicial = pd.to_datetime(fecha_inicial, format="%m/%d/%Y", errors="coerce")
         fecha_final = pd.to_datetime(fecha_final, format="%m/%d/%Y", errors="coerce")
         
         print(f"Fechas: {fecha_inicial} a {fecha_final}", file=sys.stderr)
         
-        # PASO 2: Corte limpio (exactamente como en tu código)
-        comisiones = pd.DataFrame(all_values)
-        comisiones = comisiones.iloc[1:, 5:]  # Skip primera fila, columnas desde 5
-        comisiones.columns = comisiones.iloc[0]  # Primera fila como headers
-        comisiones = comisiones.iloc[1:]  # Skip la fila de headers
+        # Corte Limpio (EXACTAMENTE como tu código)
+        comisiones = comisiones.iloc[1:, 5:]
+        comisiones.columns = comisiones.iloc[0]
+        comisiones = comisiones.iloc[1:]
         comisiones = comisiones.reset_index(drop=True)
         
-        print(f"📊 Columnas después de corte: {list(comisiones.columns)}", file=sys.stderr)
-        
-        # PASO 3: Eliminar columnas específicas
         cols_eliminar = [1, 3, 7, 9, 14, 17, 21]
         calc_com = comisiones.drop(columns=comisiones.columns[cols_eliminar])
         calc_com.columns.name = None
-        
-        print(f"📊 Columnas después de eliminar: {list(calc_com.columns)}", file=sys.stderr)
-        
-        # PASO 4: Convertir columnas numéricas
         cols_num = calc_com.columns.drop("Sucursal")
+        
+        # Convertir esas columnas a número
         calc_com[cols_num] = (
             calc_com[cols_num]
             .astype(str)
@@ -292,8 +269,11 @@ def procesar_comisiones(spreadsheet_id, gid):
             .fillna(0)
         )
         
-        # PASO 5: Calcular porcentajes (ANTES de renombrar)
-        # Crear columnas de comisión con nombres originales
+        comisiones = calc_com.copy()
+        comisiones.insert(0, "Fecha Inicial", fecha_inicial)
+        comisiones.insert(1, "Fecha Final", fecha_final)
+        
+        # Calcular porcentajes
         calc_com["Comision Vendedor Puertas"] = calc_com["Comision Vendedor"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
         calc_com["Comision Vendedor Chapas"] = calc_com["Comision Chapas"] / (calc_com["Total Chapa"] + calc_com["Total  C HC"])
         calc_com["Comision Vendedor Instalaciones"] = calc_com["Comision Instalaciones"] / calc_com["Instalaciones Vendedor"]
@@ -307,7 +287,6 @@ def procesar_comisiones(spreadsheet_id, gid):
         calc_com["Comision Osvaldo"] = calc_com["Osvaldo"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
         calc_com["Comision July"] = calc_com["July"] / (calc_com["Total"] + calc_com["Total Puertas HC"])
         
-        # PASO 6: Seleccionar columnas
         calc_com = calc_com[[
             "Sucursal",
             "Comision Vendedor Puertas",
@@ -324,20 +303,22 @@ def procesar_comisiones(spreadsheet_id, gid):
             "Comision July",
         ]]
         
-        # PASO 7: Limpiar NaN e infinitos
+        # Limpiar NaN e infinitos
         calc_com.replace([np.inf, -np.inf], 0, inplace=True)
         calc_com.fillna(0, inplace=True)
         
-        # PASO 8: Redondear
-        cols_comisiones = calc_com.columns.drop("Sucursal")
-        calc_com[cols_comisiones] = calc_com[cols_comisiones].round(4)
+        # Redondear a 4 decimales
+        cols = calc_com.columns.drop("Sucursal")
+        calc_com[cols] = calc_com[cols].round(4)
         
-        # PASO 9: Agregar fechas y renombrar columnas para PostgreSQL
-        calc_com.insert(0, "fecha_inicial", fecha_inicial)
-        calc_com.insert(1, "fecha_final", fecha_final)
+        # Agregar fechas al inicio
+        calc_com.insert(0, "Fecha Inicial", fecha_inicial)
+        calc_com.insert(1, "Fecha Final", fecha_final)
         
-        # Renombrar para coincidir con schema PostgreSQL
+        # Renombrar para PostgreSQL
         rename_map = {
+            "Fecha Inicial": "fecha_inicial",
+            "Fecha Final": "fecha_final",
             "Sucursal": "sucursal",
             "Comision Vendedor Puertas": "comision_vendedor_puertas",
             "Comision Vendedor Chapas": "comision_vendedor_chapas",
@@ -365,35 +346,14 @@ def procesar_comisiones(spreadsheet_id, gid):
 
 
 def procesar_ventas(spreadsheet_id, gid):
-    """Procesa la hoja de ventas usando API de gspread"""
+    """Procesa la hoja de ventas - Usando CSV como tu código original"""
     try:
-        print(f"Abriendo spreadsheet (ID={spreadsheet_id})...", file=sys.stderr)
+        print(f"Descargando ventas (gid={gid})...", file=sys.stderr)
         
-        # Abre el spreadsheet
-        sheet = gc.open_by_key(spreadsheet_id)
+        # Usar la misma URL que en tu código original
+        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid}"
         
-        # Obtén la hoja por su ID (gid)
-        worksheet = None
-        for ws in sheet.worksheets():
-            print(f"  Hoja encontrada: {ws.title} (gid={ws.id})", file=sys.stderr)
-            if ws.id == int(gid):
-                worksheet = ws
-                break
-        
-        if not worksheet:
-            raise ValueError(f"❌ No se encontró la hoja con gid={gid}")
-        
-        print(f"✅ Usando hoja: {worksheet.title} (gid={gid})", file=sys.stderr)
-        
-        # Obtén todos los datos (incluye encabezados)
-        print(f"Descargando datos de la hoja...", file=sys.stderr)
-        all_data = worksheet.get_all_records()
-        
-        if not all_data:
-            raise ValueError("La hoja está vacía")
-        
-        # Convertir a DataFrame
-        df = pd.DataFrame(all_data)
+        df = pd.read_csv(url)
         df = df.drop_duplicates()
         
         print(f"Filas iniciales: {len(df)}", file=sys.stderr)
