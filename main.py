@@ -20,27 +20,40 @@ gc = gspread.authorize(creds)
 # Usar Transaction Pooler en lugar de conexión directa
 # Ideal para serverless/Cloud Run
 
-DATABASE_URL = os.environ['DATABASE_URL']  # postgresql://...@pooler.supabase.com:6543/...
+# ── PostgreSQL Lazy Connection Pool ────────────────────
+DATABASE_URL = os.environ['DATABASE_URL']
+connection_pool = None  # ✅ Lazy initialization
 
-try:
-    # Crear pool de conexiones con Transaction Pooler
-    connection_pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=1,
-        maxconn=20,  # Máximo de conexiones en el pool
-        dsn=DATABASE_URL,
-        connect_timeout=5
-    )
-    print("✅ Pool de conexiones PostgreSQL creado (Transaction Pooler)", file=sys.stderr)
-except Exception as e:
-    print(f"❌ Error creando pool: {e}", file=sys.stderr)
-    raise
-
+def init_connection_pool():
+    """Inicializa el pool LAZY (solo cuando se necesita)"""
+    global connection_pool
+    if connection_pool is None:
+        try:
+            from urllib.parse import unquote_plus
+            dsn_clean = unquote_plus(DATABASE_URL)
+            
+            connection_pool = psycopg2.pool.SimpleConnectionPool(
+                minconn=1,
+                maxconn=20,
+                dsn=dsn_clean,
+                connect_timeout=5
+            )
+            print("✅ Pool de conexiones PostgreSQL creado (Lazy Transaction Pooler)", file=sys.stderr)
+        except Exception as e:
+            print(f"❌ Error creando pool: {e}", file=sys.stderr)
+            # No raise aquí - permite que la app arranque
+            connection_pool = None
 
 def get_db_connection():
-    """Obtiene una conexión del pool"""
+    """Obtiene una conexión del pool, inicializándolo si es necesario"""
     try:
+        if connection_pool is None:
+            init_connection_pool()
+        if connection_pool is None:
+            raise Exception("No se pudo inicializar el pool de conexiones")
+            
         conn = connection_pool.getconn()
-        conn.autocommit = False  # Transacciones explícitas
+        conn.autocommit = False
         return conn
     except Exception as e:
         print(f"❌ Error obteniendo conexión: {e}", file=sys.stderr)
