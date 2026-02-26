@@ -664,5 +664,5 @@ def subirdatos():
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 8080))
-    print(f"\n🚀 Supabase Sync v3 en puerto {port}\n", file=sys.stderr)
+    print(f"\nSupabase Sync v3 en puerto {port}\n", file=sys.stderr)
     app.run(host='0.0.0.0', port=port, debug=False)
