@@ -29,7 +29,7 @@ if not supabase_url or not supabase_key:
         f"  SUPABASE_KEY: {'✅ Configurada' if supabase_key else '❌ NO CONFIGURADA'}\n\n"
         "SOLUCIÓN: Configura en Cloud Run → Editar → Variables de entorno:\n"
         "  SUPABASE_URL = https://[tu-proyecto].supabase.co\n"
-        "  SUPABASE_KEY = eyJhbGc... (tu service role key)\n"
+        "  SUPABASE_KEY = [tu-secret-key] (Settings → API → Secret key)\n"
     )
     print(error_msg, file=sys.stderr)
     raise ValueError("Variables de entorno SUPABASE_URL y SUPABASE_KEY requeridas")
@@ -41,9 +41,11 @@ except Exception as e:
     error_msg = (
         f"❌ ERROR al conectar a Supabase: {str(e)}\n"
         f"Verifica que:\n"
-        f"  1. SUPABASE_URL sea válida: {supabase_url[:30]}...\n"
-        f"  2. SUPABASE_KEY sea válida (service role key)\n"
+        f"  1. SUPABASE_URL sea válida: {supabase_url[:40]}...\n"
+        f"  2. SUPABASE_KEY sea la SECRET KEY (no service_role, no anon)\n"
+        f"     Obtén la de: Settings → API → Project API keys → Secret key\n"
         f"  3. Tu proyecto Supabase esté activo\n"
+        f"  4. La secret key no esté expirada o revocada\n"
     )
     print(error_msg, file=sys.stderr)
     raise
