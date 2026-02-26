@@ -2,13 +2,12 @@ from flask import Flask, request, jsonify
 import gspread
 import pandas as pd
 import numpy as np
-import re
-import unicodedata
+import psycopg2
+from psycopg2 import pool
 import traceback
 import sys
 import os
 from google.auth import default
-from supabase import create_client, Client
 from datetime import datetime
 
 app = Flask(__name__)
@@ -17,66 +16,49 @@ app = Flask(__name__)
 creds, _ = default()
 gc = gspread.authorize(creds)
 
-# ── Supabase ──────────────────────────────────────────────────────────
-# DEBUG: Mostrar todas las variables disponibles (solo al iniciar)
-print(f"🔍 Variables de entorno disponibles:", file=sys.stderr)
-for key in sorted(os.environ.keys()):
-    if 'SUPABASE' in key or 'supabase' in key.lower():
-        value = os.environ[key]
-        masked = value[:20] + '...' if len(value) > 20 else value
-        print(f"  {key}={masked}", file=sys.stderr)
+# ── PostgreSQL Connection Pool (Transaction Pooler) ────────────────────
+# Usar Transaction Pooler en lugar de conexión directa
+# Ideal para serverless/Cloud Run
 
-# Leer variables de entorno de forma ROBUSTA para Cloud Run
-# Usar directamente os.environ[] en lugar de .get() para garantizar que existen
+DATABASE_URL = os.environ['DATABASE_URL']  # postgresql://...@pooler.supabase.com:6543/...
+
 try:
-    supabase_url = os.environ['SUPABASE_URL']
-    supabase_key = os.environ['SUPABASE_KEY']
-    print(f"✅ Variables de entorno leídas correctamente", file=sys.stderr)
-except KeyError as e:
-    error_msg = (
-        f"❌ ERROR CRÍTICO: Variable de entorno faltante: {str(e)}\n"
-        f"Variables disponibles: {list(os.environ.keys())}\n\n"
-        f"SOLUCIÓN: Configura en Cloud Run → Editar → Variables de entorno:\n"
-        f"  SUPABASE_URL = https://[tu-proyecto].supabase.co\n"
-        f"  SUPABASE_KEY = [tu-secret-key]\n"
-        f"\nLuego haz IMPLEMENTAR y espera el deploy."
+    # Crear pool de conexiones con Transaction Pooler
+    connection_pool = psycopg2.pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=20,  # Máximo de conexiones en el pool
+        dsn=DATABASE_URL,
+        connect_timeout=5
     )
-    print(error_msg, file=sys.stderr)
-    raise ValueError(f"Variable de entorno faltante: {str(e)}")
-
-# Validación de valores
-if not supabase_url or not supabase_key:
-    error_msg = (
-        f"❌ ERROR: Variables de entorno están vacías\n"
-        f"  SUPABASE_URL: {'tiene valor' if supabase_url else 'VACÍA'}\n"
-        f"  SUPABASE_KEY: {'tiene valor' if supabase_key else 'VACÍA'}\n"
-    )
-    print(error_msg, file=sys.stderr)
-    raise ValueError("Variables de entorno están vacías")
-
-print(f"✅ SUPABASE_URL: {supabase_url}", file=sys.stderr)
-print(f"✅ SUPABASE_KEY: {supabase_key[:30]}...{supabase_key[-10:]}", file=sys.stderr)
-
-# Intentar conexión con más debug
-try:
-    print(f"🔄 Intentando crear cliente Supabase...", file=sys.stderr)
-    supabase: Client = create_client(supabase_url, supabase_key)
-    print("✅ Conexión a Supabase establecida correctamente", file=sys.stderr)
-    
+    print("✅ Pool de conexiones PostgreSQL creado (Transaction Pooler)", file=sys.stderr)
 except Exception as e:
-    error_msg = str(e)
-    print(f"❌ ERROR al conectar a Supabase: {error_msg}", file=sys.stderr)
-    print(f"\nDEBUG INFO:", file=sys.stderr)
-    print(f"  URL: {supabase_url}", file=sys.stderr)
-    print(f"  KEY length: {len(supabase_key)}", file=sys.stderr)
-    print(f"  KEY starts with: {supabase_key[:10]}", file=sys.stderr)
-    print(f"  Error type: {type(e).__name__}", file=sys.stderr)
+    print(f"❌ Error creando pool: {e}", file=sys.stderr)
     raise
 
 
+def get_db_connection():
+    """Obtiene una conexión del pool"""
+    try:
+        conn = connection_pool.getconn()
+        conn.autocommit = False  # Transacciones explícitas
+        return conn
+    except Exception as e:
+        print(f"❌ Error obteniendo conexión: {e}", file=sys.stderr)
+        raise
+
+
+def return_db_connection(conn):
+    """Devuelve la conexión al pool"""
+    try:
+        if conn:
+            connection_pool.putconn(conn)
+    except Exception as e:
+        print(f"❌ Error devolviendo conexión: {e}", file=sys.stderr)
+
+
 # ── Funciones de Conversión ───────────────────────────────────────────
-def convertir_tipos_para_supabase(df):
-    """Convierte tipos de datos de pandas a tipos seguros para Supabase"""
+def convertir_tipos_para_postgresql(df):
+    """Convierte tipos de datos de pandas a tipos seguros para PostgreSQL"""
     df_convertido = df.copy()
     
     for col in df_convertido.columns:
@@ -93,139 +75,97 @@ def convertir_tipos_para_supabase(df):
     return df_convertido
 
 
-# ── Funciones de Validación ───────────────────────────────────────────
-
-def obtener_duplicados(df, tabla, columnas_clave, solo_primero=False):
-    """
-    Obtiene registros de Supabase que coinciden con los datos en el DataFrame
-    
-    Args:
-        df: DataFrame con datos a buscar
-        tabla: nombre de la tabla en Supabase
-        columnas_clave: lista de columnas para identificar duplicados
-        solo_primero: si True, detiene en el primer duplicado
-    
-    Returns:
-        list de diccionarios con registros duplicados
-    """
+def insertar_datos_postgresql(tabla, datos, columnas):
+    """Inserta datos en PostgreSQL usando Connection Pool"""
+    conn = None
     try:
-        if df.empty or not columnas_clave:
-            return []
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
-        duplicados_encontrados = []
+        # Construir query INSERT
+        placeholders = ','.join(['%s'] * len(columnas))
+        cols_str = ','.join(columnas)
+        query = f"INSERT INTO {tabla} ({cols_str}) VALUES ({placeholders})"
         
-        for idx, row in df.iterrows():
-            query = supabase.table(tabla).select('*')
-            
-            for col in columnas_clave:
-                if col not in row.index:
-                    print(f"Advertencia: columna '{col}' no encontrada en DataFrame", file=sys.stderr)
-                    continue
-                
-                valor = row[col]
-                
-                if pd.isna(valor):
-                    continue
-                
-                query = query.eq(str(col), str(valor))
+        # Insertar por lotes (1000 registros por transacción)
+        filas_insertadas = 0
+        batch_size = 1000
+        
+        for i in range(0, len(datos), batch_size):
+            lote = datos[i:i+batch_size]
             
             try:
-                resultado = query.execute()
-                if resultado.data:
-                    for dup in resultado.data:
-                        dup['_df_index'] = idx
-                    duplicados_encontrados.extend(resultado.data)
-                    
-                    if solo_primero:
-                        return duplicados_encontrados
-            
+                # Convertir diccionarios a tuplas en el orden correcto
+                valores_lote = [tuple(row[col] for col in columnas) for row in lote]
+                cursor.executemany(query, valores_lote)
+                conn.commit()
+                filas_insertadas += len(lote)
+                print(f"  ✅ Insertadas {len(lote)} filas (total: {filas_insertadas})", file=sys.stderr)
+                
             except Exception as e:
-                print(f"Error en búsqueda de duplicados fila {idx}: {str(e)}", file=sys.stderr)
+                conn.rollback()
+                print(f"❌ Error en lote {i}: {str(e)}", file=sys.stderr)
+                raise
+        
+        cursor.close()
+        return filas_insertadas
+        
+    except Exception as e:
+        print(f"❌ Error al insertar en {tabla}: {str(e)}", file=sys.stderr)
+        raise
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+
+def obtener_duplicados_postgresql(tabla, columnas_clave, datos):
+    """Obtiene registros duplicados de PostgreSQL"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        duplicados = []
+        
+        for row_idx, row in enumerate(datos):
+            # Construir WHERE clause
+            where_parts = []
+            where_values = []
+            
+            for col in columnas_clave:
+                valor = row.get(col)
+                if valor is None:
+                    where_parts.append(f"{col} IS NULL")
+                else:
+                    where_parts.append(f"{col} = %s")
+                    where_values.append(valor)
+            
+            where_clause = ' AND '.join(where_parts)
+            query = f"SELECT * FROM {tabla} WHERE {where_clause} LIMIT 1"
+            
+            try:
+                cursor.execute(query, where_values)
+                resultado = cursor.fetchone()
+                
+                if resultado:
+                    duplicados.append({
+                        '_db_row': resultado,
+                        '_df_index': row_idx
+                    })
+                    
+            except Exception as e:
+                print(f"Error en búsqueda de duplicados fila {row_idx}: {str(e)}", file=sys.stderr)
                 continue
         
-        return duplicados_encontrados
-    
+        cursor.close()
+        return duplicados
+        
     except Exception as e:
         print(f"Error al obtener duplicados: {str(e)}", file=sys.stderr)
         return []
-
-
-def escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, df_duplicados, tipo):
-    """
-    Escribe los duplicados en Google Sheets para revisión
-    
-    Args:
-        spreadsheet_id: ID del spreadsheet
-        gid_duplicados: GID de la hoja donde escribir
-        df_duplicados: DataFrame con los duplicados
-        tipo: "VENTAS" o "COMISIONES"
-    
-    Returns:
-        dict con resultado
-    """
-    try:
-        if df_duplicados.empty:
-            print(f"No hay duplicados para escribir", file=sys.stderr)
-            return {"status": "ok", "mensaje": "No hay duplicados"}
-        
-        sh = gc.open_by_key(spreadsheet_id)
-        
-        try:
-            ws = sh.worksheet(None)
-            for worksheet in sh.worksheets():
-                if worksheet.id == int(gid_duplicados):
-                    ws = worksheet
-                    break
-        except:
-            ws = sh.add_worksheet(
-                title=f"Duplicados_{tipo}_{datetime.now().strftime('%Y%m%d')}",
-                rows=5000,
-                cols=50
-            )
-        
-        ws.clear()
-        
-        # Metadatos
-        metadata = [
-            [f"🔴 DUPLICADOS EN {tipo} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"],
-            [f"Total encontrados: {len(df_duplicados)}"],
-            [f"Acción requerida: REVISAR ANTES DE INSERTAR"],
-            [],
-            df_duplicados.columns.tolist()
-        ]
-        
-        datos = metadata
-        for _, row in df_duplicados.iterrows():
-            fila = []
-            for valor in row:
-                if pd.isna(valor):
-                    fila.append('')
-                elif isinstance(valor, (pd.Timestamp, np.datetime64)):
-                    fila.append(pd.Timestamp(valor).strftime('%Y-%m-%d %H:%M:%S'))
-                elif isinstance(valor, (int, float, np.integer, np.floating)) and not isinstance(valor, bool):
-                    if isinstance(valor, float) and valor.is_integer():
-                        fila.append(int(valor))
-                    else:
-                        fila.append(valor)
-                else:
-                    fila.append(str(valor))
-            datos.append(fila)
-        
-        ws.update(datos, value_input_option='USER_ENTERED')
-        
-        print(f"✅ Escritos {len(df_duplicados)} duplicados de {tipo} en Sheets", file=sys.stderr)
-        return {
-            "status": "ok",
-            "filas_escritas": len(df_duplicados),
-            "mensaje": f"Duplicados escritos en Sheets para revisión"
-        }
-    
-    except Exception as e:
-        print(f"Error escribiendo en Sheets: {str(e)}", file=sys.stderr)
-        return {
-            "status": "error",
-            "mensaje": f"Error al escribir en Sheets: {str(e)}"
-        }
+    finally:
+        if conn:
+            return_db_connection(conn)
 
 
 # ── Funciones de Procesamiento ────────────────────────────────────────
@@ -409,24 +349,12 @@ def procesar_ventas(spreadsheet_id, gid):
 @app.route('/health', methods=['GET'])
 def health():
     """Endpoint de salud"""
-    return jsonify({"status": "ok", "servicio": "Supabase Sync v3"}), 200
+    return jsonify({"status": "ok", "servicio": "Sync PostgreSQL v2 (Transaction Pooler)"}), 200
 
 
 @app.route('/validar', methods=['POST'])
 def validar():
-    """
-    ENDPOINT 1: VALIDAR DATOS ANTES DE INSERTAR
-    
-    Request JSON:
-    {
-        "spreadsheet_base_id": "...",
-        "gid_ventas": "1383532722",
-        "gid_comisiones": "16410014",
-        "gid_duplicados": "1455156763",
-        "columnas_clave_ventas": ["folio", "sucursal", "fecha_venta"],
-        "columnas_clave_comisiones": ["fecha_inicial", "fecha_final", "sucursal"]
-    }
-    """
+    """Validar datos antes de insertar"""
     try:
         data = request.get_json()
         print(f"\n{'='*60}", file=sys.stderr)
@@ -437,7 +365,6 @@ def validar():
         spreadsheet_id = data.get('spreadsheet_base_id')
         gid_ventas = data.get('gid_ventas')
         gid_comisiones = data.get('gid_comisiones')
-        gid_duplicados = data.get('gid_duplicados')
         tabla_ventas = data.get('tabla_ventas', 'ventas')
         tabla_comisiones = data.get('tabla_comisiones', 'comisiones')
         columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta'])
@@ -449,60 +376,42 @@ def validar():
                 "mensaje": "spreadsheet_base_id, gid_ventas, gid_comisiones requeridos"
             }), 400
 
-        # PASO 1: VALIDAR VENTAS
+        # VALIDACIÓN VENTAS
         print("[1/3] Procesando y validando VENTAS...", file=sys.stderr)
         df_ventas = procesar_ventas(spreadsheet_id, gid_ventas)
+        datos_ventas = df_ventas.to_dict(orient='records')
         
-        duplicados_ventas = obtener_duplicados(df_ventas, tabla_ventas, columnas_clave_ventas, solo_primero=False)
+        duplicados_ventas = obtener_duplicados_postgresql(tabla_ventas, columnas_clave_ventas, datos_ventas)
         
         if duplicados_ventas:
             print(f"🔴 DUPLICADOS EN VENTAS: {len(duplicados_ventas)}", file=sys.stderr)
-            
-            if gid_duplicados:
-                df_dups = pd.DataFrame(duplicados_ventas)
-                escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, df_dups, "VENTAS")
-            
             return jsonify({
                 "status": "validacion_fallida",
                 "paso": "ventas",
                 "mensaje": f"❌ Se encontraron {len(duplicados_ventas)} registros duplicados en VENTAS",
-                "duplicados_encontrados": len(duplicados_ventas),
-                "accion": f"📝 Revisar los duplicados en Google Sheets (GID: {gid_duplicados})",
-                "detalles": "Los duplicados han sido escritos en la hoja de revisión. Elimínalos antes de reintentar."
+                "duplicados_encontrados": len(duplicados_ventas)
             }), 200
 
         print("✅ Validación de VENTAS OK", file=sys.stderr)
 
-        # PASO 2: VALIDAR COMISIONES
+        # VALIDACIÓN COMISIONES
         print("[2/3] Procesando y validando COMISIONES...", file=sys.stderr)
         df_comisiones = procesar_comisiones(spreadsheet_id, gid_comisiones)
+        datos_comisiones = df_comisiones.to_dict(orient='records')
         
-        duplicados_comisiones = obtener_duplicados(df_comisiones, tabla_comisiones, columnas_clave_comisiones, solo_primero=True)
+        duplicados_comisiones = obtener_duplicados_postgresql(tabla_comisiones, columnas_clave_comisiones, datos_comisiones[:1])
         
         if duplicados_comisiones:
             print(f"⚠️  DUPLICADOS EN COMISIONES: {len(duplicados_comisiones)}", file=sys.stderr)
-            
             return jsonify({
                 "status": "validacion_parcial",
-                "mensaje": f"⚠️  Las COMISIONES ya existen en la base de datos",
-                "duplicados_comisiones": True,
-                "accion": "Se encontró al menos 1 registro duplicado",
-                "recomendacion": "Las comisiones ya están registradas. Si es necesario actualizar, bórralas primero.",
-                "ventas": {
-                    "status": "ok",
-                    "duplicados": False,
-                    "filas_procesadas": len(df_ventas)
-                },
-                "comisiones": {
-                    "status": "duplicados",
-                    "duplicados": True,
-                    "filas_procesadas": len(df_comisiones)
-                }
+                "mensaje": "⚠️  Las COMISIONES ya existen en la base de datos",
+                "duplicados_comisiones": True
             }), 200
 
         print("✅ Validación de COMISIONES OK", file=sys.stderr)
 
-        # PASO 3: TODO OK
+        # TODO OK
         print("[3/3] ✅ VALIDACIÓN COMPLETA OK", file=sys.stderr)
 
         return jsonify({
@@ -529,20 +438,7 @@ def validar():
 
 @app.route('/subirdatos', methods=['POST'])
 def subirdatos():
-    """
-    ENDPOINT 2: INSERTAR DATOS EN SUPABASE
-    
-    Request JSON:
-    {
-        "spreadsheet_base_id": "...",
-        "gid_ventas": "1383532722",
-        "gid_comisiones": "16410014",
-        "tabla_ventas": "ventas",
-        "tabla_comisiones": "comisiones",
-        "columnas_clave_ventas": ["folio", "sucursal", "fecha_venta"],
-        "columnas_clave_comisiones": ["fecha_inicial", "fecha_final", "sucursal"]
-    }
-    """
+    """Insertar datos en PostgreSQL usando Transaction Pooler"""
     try:
         data = request.get_json()
         print(f"\n{'='*60}", file=sys.stderr)
@@ -555,8 +451,6 @@ def subirdatos():
         gid_comisiones = data.get('gid_comisiones')
         tabla_ventas = data.get('tabla_ventas', 'ventas')
         tabla_comisiones = data.get('tabla_comisiones', 'comisiones')
-        columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta'])
-        columnas_clave_comisiones = data.get('columnas_clave_comisiones', ['fecha_inicial', 'fecha_final', 'sucursal'])
 
         if not all([spreadsheet_id, gid_ventas, gid_comisiones]):
             return jsonify({
@@ -564,85 +458,32 @@ def subirdatos():
                 "mensaje": "spreadsheet_base_id, gid_ventas, gid_comisiones requeridos"
             }), 400
 
-        # VALIDACIÓN INTERNA
-        print("[1/4] Validando VENTAS antes de insertar...", file=sys.stderr)
+        # PROCESAMIENTO
+        print("[1/4] Procesando VENTAS...", file=sys.stderr)
         df_ventas = procesar_ventas(spreadsheet_id, gid_ventas)
+        df_ventas = convertir_tipos_para_postgresql(df_ventas)
+        datos_ventas = df_ventas.to_dict(orient='records')
         
-        duplicados_ventas = obtener_duplicados(df_ventas, tabla_ventas, columnas_clave_ventas, solo_primero=False)
+        columnas_ventas = list(df_ventas.columns)
         
-        if duplicados_ventas:
-            print(f"❌ Inserción cancelada: {len(duplicados_ventas)} duplicados", file=sys.stderr)
-            return jsonify({
-                "status": "insercion_cancelada",
-                "mensaje": f"❌ No se puede insertar: hay {len(duplicados_ventas)} duplicados en VENTAS",
-                "accion": "Ejecuta /validar para ver los duplicados y revisarlos en Sheets"
-            }), 400
+        print("[2/4] Insertando VENTAS...", file=sys.stderr)
+        filas_ventas = insertar_datos_postgresql(tabla_ventas, datos_ventas, columnas_ventas)
 
-        print("✅ VENTAS validadas", file=sys.stderr)
-
-        print("[2/4] Validando COMISIONES antes de insertar...", file=sys.stderr)
+        print("[3/4] Procesando COMISIONES...", file=sys.stderr)
         df_comisiones = procesar_comisiones(spreadsheet_id, gid_comisiones)
+        df_comisiones = convertir_tipos_para_postgresql(df_comisiones)
+        datos_comisiones = df_comisiones.to_dict(orient='records')
         
-        duplicados_comisiones = obtener_duplicados(df_comisiones, tabla_comisiones, columnas_clave_comisiones, solo_primero=True)
+        columnas_comisiones = list(df_comisiones.columns)
         
-        if duplicados_comisiones:
-            print(f"❌ Inserción cancelada: duplicados en comisiones", file=sys.stderr)
-            return jsonify({
-                "status": "insercion_cancelada",
-                "mensaje": "❌ No se puede insertar: ya existen registros duplicados en COMISIONES",
-                "accion": "Elimina los registros de comisiones existentes o ejecuta /validar"
-            }), 400
-
-        print("✅ COMISIONES validadas", file=sys.stderr)
-
-        # INSERCIÓN
-        print("[3/4] Insertando VENTAS...", file=sys.stderr)
-        df_ventas_sql = convertir_tipos_para_supabase(df_ventas)
-        datos_ventas = df_ventas_sql.to_dict(orient='records')
-        
-        batch_size = 1000
-        filas_ventas = 0
-        
-        for i in range(0, len(datos_ventas), batch_size):
-            lote = datos_ventas[i:i+batch_size]
-            try:
-                supabase.table(tabla_ventas).insert(lote).execute()
-                filas_ventas += len(lote)
-                print(f"  ✅ Insertadas {len(lote)} ventas (total: {filas_ventas})", file=sys.stderr)
-            except Exception as e:
-                print(f"❌ Error: {str(e)}", file=sys.stderr)
-                return jsonify({
-                    "status": "error",
-                    "mensaje": f"Error al insertar ventas: {str(e)}",
-                    "filas_ventas_insertadas": filas_ventas
-                }), 500
-
         print("[4/4] Insertando COMISIONES...", file=sys.stderr)
-        df_comisiones_sql = convertir_tipos_para_supabase(df_comisiones)
-        datos_comisiones = df_comisiones_sql.to_dict(orient='records')
-        
-        filas_comisiones = 0
-        
-        for i in range(0, len(datos_comisiones), batch_size):
-            lote = datos_comisiones[i:i+batch_size]
-            try:
-                supabase.table(tabla_comisiones).insert(lote).execute()
-                filas_comisiones += len(lote)
-                print(f"  ✅ Insertadas {len(lote)} comisiones (total: {filas_comisiones})", file=sys.stderr)
-            except Exception as e:
-                print(f"❌ Error: {str(e)}", file=sys.stderr)
-                return jsonify({
-                    "status": "error",
-                    "mensaje": f"Error al insertar comisiones: {str(e)}",
-                    "filas_ventas": filas_ventas,
-                    "filas_comisiones": 0
-                }), 500
+        filas_comisiones = insertar_datos_postgresql(tabla_comisiones, datos_comisiones, columnas_comisiones)
 
         print("\n✅ INSERCIÓN COMPLETADA\n", file=sys.stderr)
 
         return jsonify({
             "status": "insercion_exitosa",
-            "mensaje": "✅ Datos insertados en Supabase exitosamente",
+            "mensaje": "✅ Datos insertados en PostgreSQL exitosamente",
             "ventas": {
                 "tabla": tabla_ventas,
                 "filas_insertadas": filas_ventas,
@@ -664,5 +505,5 @@ def subirdatos():
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 8080))
-    print(f"\nSupabase Sync v3 en puerto {port}\n", file=sys.stderr)
+    print(f"\n🚀 PostgreSQL Sync v2 (Transaction Pooler) en puerto {port}\n", file=sys.stderr)
     app.run(host='0.0.0.0', port=port, debug=False)
