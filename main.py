@@ -184,22 +184,46 @@ def obtener_duplicados_postgresql(tabla, columnas_clave, datos):
 # ── Funciones de Procesamiento ────────────────────────────────────────
 
 def procesar_comisiones(spreadsheet_id, gid):
-    """Procesa la hoja de comisiones según tu schema"""
+    """Procesa la hoja de comisiones usando API de gspread"""
     try:
-        print(f"Descargando hoja de comisiones (gid={gid})...", file=sys.stderr)
+        print(f"Abriendo spreadsheet (ID={spreadsheet_id})...", file=sys.stderr)
         
-        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid}"
-        raw = pd.read_csv(url, header=None)
+        # Abre el spreadsheet
+        sheet = gc.open_by_key(spreadsheet_id)
         
-        fecha_inicial = raw.iloc[2, 1]
-        fecha_final = raw.iloc[4, 1]
+        # Obtén la hoja por su ID (gid)
+        worksheet = None
+        for ws in sheet.worksheets():
+            if ws.id == int(gid):
+                worksheet = ws
+                break
+        
+        if not worksheet:
+            raise ValueError(f"❌ No se encontró la hoja con gid={gid}")
+        
+        print(f"✅ Usando hoja: {worksheet.title} (gid={gid})", file=sys.stderr)
+        
+        # Obtén todos los valores (sin procesar headers automáticamente)
+        print(f"Descargando datos de la hoja...", file=sys.stderr)
+        all_values = worksheet.get_all_values()
+        
+        if not all_values:
+            raise ValueError("La hoja está vacía")
+        
+        # Convertir a DataFrame sin headers automáticos
+        raw = pd.DataFrame(all_values)
+        raw = raw.rename(columns=lambda x: int(x) if isinstance(x, str) and x.isdigit() else x)
+        
+        # Extraer fechas (igual que antes, pero de diferentes fuentes)
+        fecha_inicial = raw.iloc[2, 1] if len(raw) > 2 else None
+        fecha_final = raw.iloc[4, 1] if len(raw) > 4 else None
         fecha_inicial = pd.to_datetime(fecha_inicial, format="%m/%d/%Y", errors="coerce")
         fecha_final = pd.to_datetime(fecha_final, format="%m/%d/%Y", errors="coerce")
         
         print(f"Fechas: {fecha_inicial} a {fecha_final}", file=sys.stderr)
         
-        comisiones = pd.read_csv(url)
-        
+        # Procesar datos (skip primeras filas, usar columnas específicas)
+        comisiones = pd.DataFrame(all_values)
         comisiones = comisiones.iloc[1:, 5:]
         comisiones.columns = comisiones.iloc[0]
         comisiones = comisiones.iloc[1:].reset_index(drop=True)
@@ -331,13 +355,35 @@ def procesar_comisiones(spreadsheet_id, gid):
 
 
 def procesar_ventas(spreadsheet_id, gid):
-    """Procesa la hoja de ventas"""
+    """Procesa la hoja de ventas usando API de gspread"""
     try:
-        print(f"Descargando hoja de ventas (gid={gid})...", file=sys.stderr)
+        print(f"Abriendo spreadsheet (ID={spreadsheet_id})...", file=sys.stderr)
         
-        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid}"
-        print(f"📌 URL generada: {url}", file=sys.stderr)
-        df = pd.read_csv(url, dtype=str)
+        # Abre el spreadsheet
+        sheet = gc.open_by_key(spreadsheet_id)
+        
+        # Obtén la hoja por su ID (gid)
+        worksheet = None
+        for ws in sheet.worksheets():
+            print(f"  Hoja encontrada: {ws.title} (gid={ws.id})", file=sys.stderr)
+            if ws.id == int(gid):
+                worksheet = ws
+                break
+        
+        if not worksheet:
+            raise ValueError(f"❌ No se encontró la hoja con gid={gid}")
+        
+        print(f"✅ Usando hoja: {worksheet.title} (gid={gid})", file=sys.stderr)
+        
+        # Obtén todos los datos (incluye encabezados)
+        print(f"Descargando datos de la hoja...", file=sys.stderr)
+        all_data = worksheet.get_all_records()
+        
+        if not all_data:
+            raise ValueError("La hoja está vacía")
+        
+        # Convertir a DataFrame
+        df = pd.DataFrame(all_data)
         df = df.drop_duplicates()
         
         print(f"Filas iniciales: {len(df)}", file=sys.stderr)
@@ -363,7 +409,7 @@ def procesar_ventas(spreadsheet_id, gid):
 @app.route('/health', methods=['GET'])
 def health():
     """Endpoint de salud"""
-    return jsonify({"status": "ok", "servicio": "Sync PostgreSQL v2 (Transaction Pooler)"}), 200
+    return jsonify({"status": "ok", "servicio": "Sync PostgreSQL v2 (Transaction Pooler + gspread API)"}), 200
 
 
 @app.route('/validar', methods=['POST'])
@@ -519,5 +565,5 @@ def subirdatos():
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 8080))
-    print(f"\n🚀 PostgreSQL Sync v2 (Transaction Pooler) en puerto {port}\n", file=sys.stderr)
+    print(f"\n🚀 PostgreSQL Sync v2 (Transaction Pooler + gspread API) en puerto {port}\n", file=sys.stderr)
     app.run(host='0.0.0.0', port=port, debug=False)
