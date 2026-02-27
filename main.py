@@ -397,18 +397,19 @@ def procesar_ventas(spreadsheet_id, gid):
         if 'fecha_venta' in df.columns:
             df['fecha_venta'] = pd.to_datetime(df['fecha_venta'], errors='coerce')
         
-         # ── Desaplanar: agrupar registros duplicados ──
+       # ── Desaplanar: agrupar registros duplicados ──
         cols_grupo = ['folio', 'fecha_venta', 'cliente', 'sucursal', 'metodo_venta', 
                       'tipo_pago', 'articulo', 'notaventa', 'metodo_pago', 
                       'cuenta_deposito', 'confirmacion_pago', 'se_paga']
         cols_grupo = [c for c in cols_grupo if c in df.columns]
         
-        cols_sum = ['unidades_vendidas', 'total', 'pago_recibido']
+        cols_sum = ['unidades_vendidas', 'total']
         cols_sum = [c for c in cols_sum if c in df.columns]
         
-        df = df.groupby(cols_grupo, as_index=False, dropna=False).agg(
-            {col: 'sum' for col in cols_sum}
-        )
+        agg_dict = {col: 'sum' for col in cols_sum}
+        agg_dict['pago_recibido'] = 'first'
+        
+        df = df.groupby(cols_grupo, as_index=False, dropna=False).agg(agg_dict)
         print(f"Ventas después de agrupar: {len(df)} filas", file=sys.stderr)
         
         print(f"Ventas procesadas: {len(df)} filas", file=sys.stderr)
