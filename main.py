@@ -339,9 +339,35 @@ def procesar_comisiones(spreadsheet_id, gid):
         }
         
         calc_com = calc_com.rename(columns=rename_map)
+
+        comisiones_rename = {
+            "Fecha Inicial": "fecha_inicial",
+            "Fecha Final": "fecha_final",
+            "Sucursal": "sucursal",
+            "Total": "total",
+            "Total Chapa": "total_chapa",
+            "Instalaciones Vendedor": "instalaciones_vendedor",
+            "Total Instalaciones": "total_instalaciones",
+            "Total Puertas HC": "total_puertas_hc",
+            "Total  C HC": "total_c_hc",
+            "Comision Vendedor": "comision_vendedor",
+            "Comision Chapas": "comision_chapas",
+            "Comision Instalaciones": "comision_instalaciones",
+            "Comision Vendedor HC": "comision_vendedor_hc",
+            "Comision Chapas HC": "comision_chapas_hc",
+            "Puertas": "puertas",
+            "Instalaciones": "instalaciones",
+            "Chapas": "chapas",
+            "Coordinador": "coordinador",
+            "Elena": "elena",
+            "Osvaldo": "osvaldo",
+            "July": "july",
+        }
+
+        comisiones = comisiones.rename(columns=comisiones_rename)
         
         print(f"Comisiones procesadas: {len(calc_com)} filas", file=sys.stderr)
-        return calc_com
+        return comisiones, calc_com
     
     except Exception as e:
         print(f"Error procesando comisiones: {str(e)}", file=sys.stderr)
@@ -485,7 +511,7 @@ def validar():
 
         # VALIDACIÓN COMISIONES
         print("[2/3] Procesando y validando COMISIONES...", file=sys.stderr)
-        df_comisiones = procesar_comisiones(spreadsheet_id, gid_comisiones)
+        df_comisiones, _ = procesar_comisiones(spreadsheet_id, gid_comisiones)
         datos_comisiones = df_comisiones.to_dict(orient='records')
         
         duplicados_comisiones = obtener_duplicados_postgresql(tabla_comisiones, columnas_clave_comisiones, datos_comisiones[:1])
@@ -552,18 +578,18 @@ def subirdatos():
         df_ventas = procesar_ventas(spreadsheet_id, gid_ventas)
         
         print("[2/5] Procesando COMISIONES...", file=sys.stderr)
-        df_comisiones = procesar_comisiones(spreadsheet_id, gid_comisiones)
+        df_comisiones, df_calc_com = procesar_comisiones(spreadsheet_id, gid_comisiones)
         
         # JOINEAR VENTAS CON COMISIONES
         print("[3/5] Joinando VENTAS con COMISIONES...", file=sys.stderr)
         
         # Seleccionar solo las columnas de comisiones (sin fecha_inicial, fecha_final)
-        cols_comisiones = [col for col in df_comisiones.columns if col.startswith('comision_') or col == 'sucursal']
-        df_comisiones_join = df_comisiones[cols_comisiones]
+        cols_join = [col for col in df_calc_com.columns if col.startswith('comision_') or col == 'sucursal']
+        
         
         # Merge left join
         df_ventas = df_ventas.merge(
-            df_comisiones_join,
+            df_calc_com[cols_join],
             on='sucursal',
             how='left'
         )
