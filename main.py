@@ -444,7 +444,7 @@ def validar():
         gid_duplicados = data.get('gid_duplicados', '1455156763')  # GID de la hoja Duplicados
         tabla_ventas = data.get('tabla_ventas', 'ventas')
         tabla_comisiones = data.get('tabla_comisiones', 'comisiones')
-        columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta', 'articulo'])
+        columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta', 'articulo', 'notaventa'])
         columnas_clave_comisiones = data.get('columnas_clave_comisiones', ['fecha_inicial', 'fecha_final', 'sucursal'])
 
         if not all([spreadsheet_id, gid_ventas, gid_comisiones]):
