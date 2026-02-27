@@ -29,13 +29,10 @@ def init_connection_pool():
     global connection_pool
     if connection_pool is None:
         try:
-            from urllib.parse import unquote_plus
-            dsn_clean = unquote_plus(DATABASE_URL)
-            
             connection_pool = psycopg2.pool.SimpleConnectionPool(
                 minconn=1,
                 maxconn=20,
-                dsn=dsn_clean,
+                dsn=DATABASE_URL,
                 connect_timeout=5
             )
             print("✅ Pool de conexiones PostgreSQL creado (Lazy Transaction Pooler)", file=sys.stderr)
