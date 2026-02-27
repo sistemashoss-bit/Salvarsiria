@@ -368,7 +368,7 @@ def procesar_ventas(spreadsheet_id, gid):
             'Metodo de Venta': 'metodo_venta',
             'Tipo de Pago': 'tipo_pago',
             'Unidades Vendidas': 'unidades_vendidas',
-            'NotaVenta': 'nota_venta',
+            'NotaVenta': 'notaventa',
             'Total': 'total',
             'Pago Recibido': 'pago_recibido',
             'Método de Pago': 'metodo_pago',
