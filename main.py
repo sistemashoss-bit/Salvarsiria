@@ -397,6 +397,20 @@ def procesar_ventas(spreadsheet_id, gid):
         if 'fecha_venta' in df.columns:
             df['fecha_venta'] = pd.to_datetime(df['fecha_venta'], errors='coerce')
         
+         # ── Desaplanar: agrupar registros duplicados ──
+        cols_grupo = ['folio', 'fecha_venta', 'cliente', 'sucursal', 'metodo_venta', 
+                      'tipo_pago', 'articulo', 'notaventa', 'metodo_pago', 
+                      'cuenta_deposito', 'confirmacion_pago', 'se_paga']
+        cols_grupo = [c for c in cols_grupo if c in df.columns]
+        
+        cols_sum = ['unidades_vendidas', 'total', 'pago_recibido']
+        cols_sum = [c for c in cols_sum if c in df.columns]
+        
+        df = df.groupby(cols_grupo, as_index=False, dropna=False).agg(
+            {col: 'sum' for col in cols_sum}
+        )
+        print(f"Ventas después de agrupar: {len(df)} filas", file=sys.stderr)
+        
         print(f"Ventas procesadas: {len(df)} filas", file=sys.stderr)
         return df
     
@@ -430,7 +444,7 @@ def validar():
         gid_duplicados = data.get('gid_duplicados', '1455156763')  # GID de la hoja Duplicados
         tabla_ventas = data.get('tabla_ventas', 'ventas')
         tabla_comisiones = data.get('tabla_comisiones', 'comisiones')
-        columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta'])
+        columnas_clave_ventas = data.get('columnas_clave_ventas', ['folio', 'sucursal', 'fecha_venta', 'articulo'])
         columnas_clave_comisiones = data.get('columnas_clave_comisiones', ['fecha_inicial', 'fecha_final', 'sucursal'])
 
         if not all([spreadsheet_id, gid_ventas, gid_comisiones]):
