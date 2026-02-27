@@ -210,7 +210,14 @@ def escribir_duplicados_en_sheets(spreadsheet_id, gid_duplicados, duplicados_ven
         
         for dup in duplicados_ventas:
             row_data = dup['_row_data']
-            row = [row_data.get(col, '') for col in headers]
+            row = []
+            for col in headers:
+                valor = row_data.get(col, '')
+                if isinstance(valor, (pd.Timestamp, datetime)):
+                    valor = valor.strftime('%Y-%m-%d')
+                elif pd.isna(valor) if not isinstance(valor, str) else False:
+                    valor = ''
+                row.append(valor)
             rows_to_write.append(row)
         
         # Escribir datos en la hoja
